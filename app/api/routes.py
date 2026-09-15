@@ -29,47 +29,55 @@ router = APIRouter(prefix="/api")
 jobs: dict[str, dict] = {}
 pipeline = TranslationPipeline()
 
-LANG_NAMES = {
-    "en": "English", "id": "Indonesian", "ms": "Malay",
-    "ja": "Japanese", "ko": "Korean", "zh": "Chinese",
-    "th": "Thai", "vi": "Vietnamese", "tl": "Filipino",
-    "ar": "Arabic", "hi": "Hindi", "bn": "Bengali",
-    "pt": "Portuguese", "es": "Spanish", "fr": "French",
-    "de": "German", "it": "Italian", "ru": "Russian",
-    "tr": "Turkish", "pl": "Polish", "nl": "Dutch",
-    "sv": "Swedish", "no": "Norwegian", "da": "Danish",
-    "fi": "Finnish", "cs": "Czech", "sk": "Slovak",
-    "hu": "Hungarian", "ro": "Romanian", "bg": "Bulgarian",
-    "hr": "Croatian", "sr": "Serbian", "uk": "Ukrainian",
-    "el": "Greek", "he": "Hebrew", "fa": "Persian",
-    "sw": "Swahili", "ta": "Tamil", "te": "Telugu",
-    "ml": "Malayalam", "my": "Myanmar", "km": "Khmer",
-    "lo": "Lao", "ka": "Georgian", "am": "Amharic",
-    "ne": "Nepali", "si": "Sinhala", "ur": "Urdu",
-}
+# Full language list (code, name). Names are sent to the LLM prompt verbatim,
+# so any language the model understands can be used — no fixed code validation.
+LANGUAGES: list[tuple[str, str]] = [
+    # Most common first
+    ("en", "English"), ("id", "Indonesian"), ("ms", "Malay"),
+    ("ja", "Japanese"), ("ko", "Korean"), ("zh", "Chinese"),
+    ("th", "Thai"), ("vi", "Vietnamese"), ("tl", "Filipino"),
+    ("ar", "Arabic"), ("hi", "Hindi"), ("bn", "Bengali"),
+    ("pt", "Portuguese"), ("es", "Spanish"), ("fr", "French"),
+    ("de", "German"), ("it", "Italian"), ("ru", "Russian"),
+    ("tr", "Turkish"), ("pl", "Polish"), ("nl", "Dutch"),
+    ("sv", "Swedish"), ("no", "Norwegian"), ("da", "Danish"),
+    ("fi", "Finnish"), ("cs", "Czech"), ("sk", "Slovak"),
+    ("hu", "Hungarian"), ("ro", "Romanian"), ("bg", "Bulgarian"),
+    ("hr", "Croatian"), ("sr", "Serbian"), ("uk", "Ukrainian"),
+    ("el", "Greek"), ("he", "Hebrew"), ("fa", "Persian"),
+    ("sw", "Swahili"), ("ta", "Tamil"), ("te", "Telugu"),
+    ("ml", "Malayalam"), ("my", "Myanmar"), ("km", "Khmer"),
+    ("lo", "Lao"), ("ka", "Georgian"), ("am", "Amharic"),
+    ("ne", "Nepali"), ("si", "Sinhala"), ("ur", "Urdu"),
+    # Extended list (alphabetical by code)
+    ("af", "Afrikaans"), ("az", "Azerbaijani"), ("be", "Belarusian"),
+    ("bs", "Bosnian"), ("ca", "Catalan"), ("ceb", "Cebuano"),
+    ("co", "Corsican"), ("cy", "Welsh"), ("eo", "Esperanto"),
+    ("et", "Estonian"), ("eu", "Basque"), ("fy", "Frisian"),
+    ("ga", "Irish"), ("gd", "Scottish Gaelic"), ("gl", "Galician"),
+    ("gu", "Gujarati"), ("ha", "Hausa"), ("haw", "Hawaiian"),
+    ("hmn", "Hmong"), ("ht", "Haitian Creole"), ("hy", "Armenian"),
+    ("ig", "Igbo"), ("is", "Icelandic"), ("iu", "Inuktitut"),
+    ("jv", "Javanese"), ("kk", "Kazakh"), ("kn", "Kannada"),
+    ("ku", "Kurdish"), ("ky", "Kyrgyz"), ("la", "Latin"),
+    ("lb", "Luxembourgish"), ("lt", "Lithuanian"), ("lv", "Latvian"),
+    ("mg", "Malagasy"), ("mi", "Maori"), ("mk", "Macedonian"),
+    ("mn", "Mongolian"), ("mr", "Marathi"), ("mt", "Maltese"),
+    ("ny", "Chichewa"), ("or", "Odia"), ("pa", "Punjabi"),
+    ("ps", "Pashto"), ("sd", "Sindhi"), ("sm", "Samoan"),
+    ("sn", "Shona"), ("so", "Somali"), ("sq", "Albanian"),
+    ("st", "Sesotho"), ("su", "Sundanese"), ("tg", "Tajik"),
+    ("ts", "Tsonga"), ("tt", "Tatar"), ("ug", "Uyghur"),
+    ("uz", "Uzbek"), ("xh", "Xhosa"), ("yi", "Yiddish"),
+    ("yo", "Yoruba"), ("zu", "Zulu"),
+]
+
+LANG_NAMES = {code: name for code, name in LANGUAGES}
 
 
 @router.get("/languages", response_model=list[LanguageInfo])
 async def get_languages():
-    common = [
-        ("en", "English"), ("id", "Indonesian"), ("ms", "Malay"),
-        ("ja", "Japanese"), ("ko", "Korean"), ("zh", "Chinese"),
-        ("th", "Thai"), ("vi", "Vietnamese"), ("tl", "Filipino"),
-        ("ar", "Arabic"), ("hi", "Hindi"), ("bn", "Bengali"),
-        ("pt", "Portuguese"), ("es", "Spanish"), ("fr", "French"),
-        ("de", "German"), ("it", "Italian"), ("ru", "Russian"),
-        ("tr", "Turkish"), ("pl", "Polish"), ("nl", "Dutch"),
-        ("sv", "Swedish"), ("no", "Norwegian"), ("da", "Danish"),
-        ("fi", "Finnish"), ("cs", "Czech"), ("sk", "Slovak"),
-        ("hu", "Hungarian"), ("ro", "Romanian"), ("bg", "Bulgarian"),
-        ("hr", "Croatian"), ("sr", "Serbian"), ("uk", "Ukrainian"),
-        ("el", "Greek"), ("he", "Hebrew"), ("fa", "Persian"),
-        ("sw", "Swahili"), ("ta", "Tamil"), ("te", "Telugu"),
-        ("ml", "Malayalam"), ("my", "Myanmar"), ("km", "Khmer"),
-        ("lo", "Lao"), ("ka", "Georgian"), ("am", "Amharic"),
-        ("ne", "Nepali"), ("si", "Sinhala"), ("ur", "Urdu"),
-    ]
-    return [LanguageInfo(code=c, name=n) for c, n in common]
+    return [LanguageInfo(code=c, name=n) for c, n in LANGUAGES]
 
 
 @router.get("/llm-status")
@@ -111,8 +119,8 @@ async def upload_file(file: UploadFile = File(...)):
 @router.post("/translate", response_model=TranslateResponse)
 async def start_translation(
     file: UploadFile = File(...),
-    source_lang: str = Form("en"),
-    target_lang: str = Form("id"),
+    source_lang: str = Form("English"),
+    target_lang: str = Form("Indonesian"),
     batch_size: int = Form(15),
     temperature: float = Form(0.3),
     max_tokens: int = Form(2048),
@@ -306,8 +314,8 @@ async def download_translation(job_id: str):
 @router.post("/translate-batch", response_model=TranslateResponse)
 async def start_batch_translation(
     files: list[UploadFile] = File(...),
-    source_lang: str = Form("en"),
-    target_lang: str = Form("id"),
+    source_lang: str = Form("English"),
+    target_lang: str = Form("Indonesian"),
     batch_size: int = Form(15),
     temperature: float = Form(0.3),
     max_tokens: int = Form(2048),

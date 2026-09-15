@@ -13,6 +13,7 @@ Subtitle Translator — context-aware subtitle translation web app powered by a 
 # 2. Start the web app
 python run.py
 # → http://localhost:8000
+# Windows: double-click run.bat instead — starts the app and auto-opens the browser
 ```
 
 ## Architecture
@@ -49,8 +50,8 @@ python run.py
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `source_lang` | `en` | Source language code — or any free-text language name |
-| `target_lang` | `id` | Target language code — or any free-text language name |
+| `source_lang` | `English` | Source language **name** (sent verbatim to the LLM prompt) |
+| `target_lang` | `Indonesian` | Target language **name** (sent verbatim to the LLM prompt) |
 | `batch_size` | `15` | Lines grouped per LLM call (context window) |
 | `temperature` | `0.3` | LLM creativity (0.1 precise → 0.7 creative) |
 | `top_p` | `0.9` | Token sampling diversity |
@@ -85,6 +86,9 @@ python run.py
 
 ### Change translation defaults
 Edit `TEMPERATURE`, `TOP_P`, `MAX_TOKENS`, `BATCH_SIZE` in `app/config.py` and the UI defaults in `app/static/index.html` / `app/static/app.js`.
+
+### Add / edit the language list
+Edit the `LANGUAGES` list of `(code, name)` tuples in `app/api/routes.py`. The dropdown value sent to the LLM is the **name**, so new entries immediately work — no code validation anywhere.
 
 ### Point to a different LLM server
 Set `LLM_BASE_URL` (e.g., `http://127.0.0.1:8080` or a remote OpenAI-compatible endpoint) and `LLM_MODEL_NAME` in `app/config.py` or via env vars.

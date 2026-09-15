@@ -5,8 +5,8 @@ from typing import Optional
 
 
 class TranslateRequest(BaseModel):
-    source_lang: str = "en"
-    target_lang: str = "id"
+    source_lang: str = "English"
+    target_lang: str = "Indonesian"
     batch_size: int = 15
     temperature: float = 0.3
     max_tokens: int = 2048

@@ -8,7 +8,7 @@ Fork of the NLLB-based [Transl8](https://github.com/Alberiansyah/Transl8) — th
 
 - **Local LLM via llama-server** — Qwen3.5-9B (or any OpenAI-compatible local server)
 - **Context-aware translation** — batches of lines sent together so the LLM keeps dialogue continuity
-- **Any language** — 48 common languages in the dropdown, plus an "Other…" option to type any language (Javanese, Catalan, Swahili, etc.) and the LLM translates it
+- **107 languages** — full dropdown list (no typing needed): English, Indonesian, Javanese, Catalan, Swahili, Zulu, and more. Language names are sent to the LLM prompt directly, so any language the model understands works.
 - **LLM parameter control** — temperature, top-p, max-tokens
 - **Multi-file batch upload** — translate multiple files in one go, download as ZIP
 - **ASS/SSA tag preservation** — italic, bold, positioning tags survive translation
@@ -42,6 +42,10 @@ A running llama-server with the model loaded. Example (match your setup):
 pip install -r requirements.txt
 python run.py
 ```
+
+**Or double-click `run.bat`** (Windows) — starts the app and opens `http://localhost:8000` in your browser automatically.
+
+Note: the llama-server must already be running (see Prerequisites) for the badge to show `Connected`.
 
 Open `http://localhost:8000` — the status badge should show `Connected: <model>`.
 
@@ -96,7 +100,7 @@ Or edit `app/config.py` directly.
 | `/api/cancel/{id}` | POST | Cancel in-progress translation |
 | `/api/download/{id}` | GET | Download single translated file |
 | `/api/download-batch/{id}` | GET | Download batch as ZIP |
-| `/api/languages` | GET | Supported language list |
+| `/api/languages` | GET | Full supported language list (107) |
 | `/api/llm-status` | GET | Local LLM server connection + model info |
 | `/api/history` | GET | Translation history (50 latest) |
 | `/api/history/{id}/download` | GET | Re-download from history |
