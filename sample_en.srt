@@ -1,0 +1,43 @@
+1
+00:00:01,000 --> 00:00:03,500
+Hey, did you hear about what happened to Sarah?
+
+2
+00:00:03,800 --> 00:00:06,200
+No, what happened? Is she okay?
+
+3
+00:00:06,500 --> 00:00:09,000
+She got that promotion she's been
+working toward for months.
+
+4
+00:00:09,300 --> 00:00:11,500
+That's amazing! She totally deserves it.
+
+5
+00:00:11,800 --> 00:00:14,000
+I know, right? She's been staying late
+every night this past quarter.
+
+6
+00:00:14,300 --> 00:00:16,800
+Well, hard work pays off.
+I'm really happy for her.
+
+7
+00:00:17,000 --> 00:00:19,500
+We should throw her a party this weekend.
+
+8
+00:00:19,800 --> 00:00:22,000
+Great idea! I'll talk to the others
+and figure out the details.
+
+9
+00:00:22,300 --> 00:00:24,500
+Make sure to keep it a surprise though.
+
+10
+00:00:24,800 --> 00:00:27,000
+Of course! Mum's the word.

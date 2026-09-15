@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Subtitle Translator</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Subtitle Translator</h1>
+            <p class="subtitle">Context-aware translation powered by your local LLM (Qwen3.5-9B)</p>
+        </header>
+
+        <div class="main-grid">
+            <div class="panel upload-panel">
+                <h2>Upload & Config</h2>
+
+                <div class="drop-zone" id="dropZone">
+                    <div class="drop-icon">📁</div>
+                    <p>Drop subtitle files here</p>
+                    <p class="small">or click to browse (multi-select supported)</p>
+                    <input type="file" id="fileInput" accept=".srt,.ass,.ssa,.vtt" multiple hidden>
+                </div>
+
+                <div class="file-list" id="fileList"></div>
+
+                <div class="file-info" id="fileInfo" style="display:none">
+                    <span class="filename" id="fileName"></span>
+                    <span class="file-meta" id="fileMeta"></span>
+                    <button class="btn-small btn-remove" id="removeFile">Remove</button>
+                </div>
+
+                <div class="form-group">
+                    <label for="sourceLang">Source Language</label>
+                    <select id="sourceLang"></select>
+                </div>
+
+                <div class="form-group">
+                    <label for="targetLang">Target Language</label>
+                    <select id="targetLang"></select>
+                </div>
+
+                <div class="form-group">
+                    <label for="llmStatusBadge">Local LLM Server</label>
+                    <div class="device-badge" id="llmStatusBadge">Checking...</div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group half">
+                        <label for="temperature">Temperature</label>
+                        <select id="temperature">
+                            <option value="0.1" title="Most accurate, literal translations. Best for technical content.">0.1 (Precise)</option>
+                            <option value="0.3" selected title="Best quality/speed balance. Recommended for most use cases.">0.3 (Balanced)</option>
+                            <option value="0.7" title="More creative phrasing. May introduce stylistic variation.">0.7 (Creative)</option>
+                        </select>
+                    </div>
+                    <div class="form-group half">
+                        <label for="topP">Top-P</label>
+                        <select id="topP">
+                            <option value="0.8" title="Narrower token sampling. More deterministic output.">0.8 (Strict)</option>
+                            <option value="0.9" selected title="Default. Balanced diversity.">0.9 (Default)</option>
+                            <option value="1.0" title="Full sampling diversity.">1.0 (Full)</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group half">
+                        <label for="maxTokens">Max Tokens</label>
+                        <select id="maxTokens">
+                            <option value="1024" title="Sufficient for short subtitle batches.">1024</option>
+                            <option value="2048" selected title="Default. Safe for most context batches.">2048 (Default)</option>
+                            <option value="4096" title="For very large context batches or long lines.">4096</option>
+                        </select>
+                    </div>
+                    <div class="form-group half"></div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group half">
+                        <label for="batchSize">Context Batch</label>
+                        <input type="number" id="batchSize" value="15" min="5" max="50" title="Number of lines grouped together for context. 15 is recommended. Lower = faster but less context between lines.">
+                    </div>
+                    <div class="form-group half"></div>
+                </div>
+
+                <div class="settings-guide">
+                    <button class="guide-toggle" type="button">
+                        📖 Settings Guide <span class="toggle-icon">▸</span>
+                    </button>
+                    <div class="guide-content" id="guideContent" style="display:none">
+                        <h3>🌡️ Temperature <small>(how creative the translations are)</small></h3>
+                        <table>
+                            <tr><td>0.1 Precise</td><td>Most literal and consistent — good for technical content</td></tr>
+                            <tr><td>0.3 Balanced</td><td>Natural phrasing with reliable accuracy — recommended</td></tr>
+                            <tr><td>0.7 Creative</td><td>More varied wording — for stylistic flexibility</td></tr>
+                        </table>
+
+                        <h3>🎯 Top-P <small>(token sampling diversity)</small></h3>
+                        <table>
+                            <tr><td>0.8 Strict</td><td>Narrower sampling — more deterministic output</td></tr>
+                            <tr><td>0.9 Default</td><td>Balanced diversity — recommended</td></tr>
+                            <tr><td>1.0 Full</td><td>Full sampling diversity — most varied</td></tr>
+                        </table>
+
+                        <h3>🔢 Max Tokens <small>(max output per LLM call)</small></h3>
+                        <table>
+                            <tr><td>1024</td><td>Short subtitle batches — fastest responses</td></tr>
+                            <tr><td>2048 Default</td><td>Safe for most context batches — recommended</td></tr>
+                            <tr><td>4096</td><td>Very large batches or lengthy lines</td></tr>
+                        </table>
+
+                        <h3>📦 Context Batch <small>(lines grouped for context)</small></h3>
+                        <table>
+                            <tr><td>5 – 10</td><td>Faster, less context between lines</td></tr>
+                            <tr><td>15 Default</td><td>Balance of context & speed — recommended</td></tr>
+                            <tr><td>20 – 50</td><td>More context, slower — good for dialogue with the LLM's large context window</td></tr>
+                        </table>
+                    </div>
+                </div>
+
+                <button class="btn btn-primary" id="translateBtn" disabled>
+                    Translate
+                </button>
+            </div>
+
+            <div class="panel progress-panel" id="progressPanel" style="display:none">
+                <h2>Translation Progress</h2>
+
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="progressBar">
+                        <span class="progress-text" id="progressText">0%</span>
+                    </div>
+                </div>
+
+                <div class="progress-details">
+                    <div class="detail-item">
+                        <span class="label">Status:</span>
+                        <span class="value" id="statusText">Queued</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">Batches:</span>
+                        <span class="value" id="batchInfo">0 / 0</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">Lines:</span>
+                        <span class="value" id="linesInfo">0 / 0</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">Time:</span>
+                        <span class="value" id="elapsedTime">0.0s</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">Speed:</span>
+                        <span class="value" id="speedInfo">- lines/s</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label">ETA:</span>
+                        <span class="value" id="etaInfo">-</span>
+                    </div>
+                </div>
+
+                <div class="progress-actions">
+                    <button class="btn btn-danger" id="cancelBtn" style="display:none">
+                        Cancel Translation
+                    </button>
+                    <button class="btn btn-secondary" id="downloadBtn" style="display:none">
+                        Download Translated File
+                    </button>
+                </div>
+            </div>
+
+            <div class="panel history-panel" id="historyPanel">
+                <h2>
+                    Translation History
+                    <button class="guide-toggle" id="historyToggle" type="button">
+                        <span class="toggle-icon">▸</span>
+                    </button>
+                </h2>
+                <div class="history-list" id="historyList" style="display:none">
+                </div>
+            </div>
+
+            <div class="panel glossary-panel">
+                <h2>Glossary <span class="optional">(optional)</span></h2>
+                <p class="hint">Define terms that should always be translated consistently</p>
+
+                <div class="glossary-list" id="glossaryList"></div>
+
+                <div class="glossary-add">
+                    <input type="text" id="glossarySource" placeholder="Source term">
+                    <input type="text" id="glossaryTarget" placeholder="Target translation">
+                    <button class="btn-small" id="addGlossaryBtn">Add</button>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Qwen3.5-9B (Local LLM) | llama-server API</p>
+        </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
