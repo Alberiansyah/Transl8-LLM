@@ -8,6 +8,7 @@ Fork of the NLLB-based [Transl8](https://github.com/Alberiansyah/Transl8) — th
 
 - **Local LLM via llama-server** — Qwen3.5-9B (or any OpenAI-compatible local server)
 - **Context-aware translation** — batches of lines sent together so the LLM keeps dialogue continuity
+- **Any language** — 48 common languages in the dropdown, plus an "Other…" option to type any language (Javanese, Catalan, Swahili, etc.) and the LLM translates it
 - **LLM parameter control** — temperature, top-p, max-tokens
 - **Multi-file batch upload** — translate multiple files in one go, download as ZIP
 - **ASS/SSA tag preservation** — italic, bold, positioning tags survive translation

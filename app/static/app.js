@@ -59,7 +59,10 @@ const LANG_NAMES = {
 };
 
 function langName(code) {
-    return LANG_NAMES[code] || code.toUpperCase();
+    if (LANG_NAMES[code]) return LANG_NAMES[code];
+    // Custom free-text language (e.g. "Javanese", "Swahili"): show as typed
+    if (code && code.length > 3) return code;
+    return code ? code.toUpperCase() : '';
 }
 
 async function loadHistory() {
@@ -160,12 +163,29 @@ async function loadLanguages() {
             sourceLang.add(new Option(`${l.name} (${l.code})`, l.code));
             targetLang.add(new Option(`${l.name} (${l.code})`, l.code));
         });
+        // "Other…" free-text option — the LLM understands any language name
+        sourceLang.add(new Option('Other… (type any language)', '__other__'));
+        targetLang.add(new Option('Other… (type any language)', '__other__'));
         sourceLang.value = 'en';
         targetLang.value = 'id';
     } catch (e) {
         console.error('Failed to load languages:', e);
     }
 }
+
+function handleLangChange(select, customInput) {
+    const isOther = select.value === '__other__';
+    customInput.style.display = isOther ? 'block' : 'none';
+    if (isOther) customInput.focus();
+}
+
+// Get the effective language value: custom input text if "Other…" selected
+function effectiveLang(select, customInput) {
+    return select.value === '__other__' ? customInput.value.trim() : select.value;
+}
+
+sourceLang.addEventListener('change', () => handleLangChange(sourceLang, sourceLangCustom));
+targetLang.addEventListener('change', () => handleLangChange(targetLang, targetLangCustom));
 
 dropZone.addEventListener('click', () => fileInput.click());
 
@@ -334,8 +354,8 @@ async function startTranslation() {
 
     const formData = new FormData();
     selectedFiles.forEach(f => formData.append('files', f));
-    formData.append('source_lang', sourceLang.value);
-    formData.append('target_lang', targetLang.value);
+    formData.append('source_lang', effectiveLang(sourceLang, sourceLangCustom));
+    formData.append('target_lang', effectiveLang(targetLang, targetLangCustom));
     formData.append('batch_size', batchSize.value);
     formData.append('temperature', temperature.value);
     formData.append('top_p', topP.value);

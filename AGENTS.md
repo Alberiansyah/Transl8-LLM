@@ -49,8 +49,8 @@ python run.py
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `source_lang` | `en` | Source language code |
-| `target_lang` | `id` | Target language code |
+| `source_lang` | `en` | Source language code — or any free-text language name |
+| `target_lang` | `id` | Target language code — or any free-text language name |
 | `batch_size` | `15` | Lines grouped per LLM call (context window) |
 | `temperature` | `0.3` | LLM creativity (0.1 precise → 0.7 creative) |
 | `top_p` | `0.9` | Token sampling diversity |

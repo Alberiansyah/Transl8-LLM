@@ -227,6 +227,17 @@ header h1 {
     border-color: var(--primary);
 }
 
+.form-group .lang-custom {
+    margin-top: 0.5rem;
+    background: var(--surface-2);
+    border: 1px dashed var(--border);
+}
+
+.form-group .lang-custom:focus {
+    border-style: solid;
+    border-color: var(--primary);
+}
+
 .form-row {
     display: flex;
     gap: 1rem;
