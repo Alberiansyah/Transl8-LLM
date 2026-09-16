@@ -150,11 +150,14 @@ class LLMEngine:
         result = response.json()
         content = result["choices"][0]["message"]["content"].strip()
 
-        # Parse translations (JSON array preferred, numbered fallback)
+        # Parse translations (numbered primary, JSON fallback)
         translated = self._parse_response(content, len(valid_texts))
 
+        # If _parse_response returned None (neither format matched), use line fallback
+        if translated is None:
+            translated = self._line_fallback(content, len(valid_texts))
         # If count mismatches, use line fallback
-        if len(translated) != len(valid_texts):
+        elif len(translated) != len(valid_texts):
             logger.warning(
                 "Parsed %d translations but expected %d, trying line fallback",
                 len(translated), len(valid_texts),
@@ -179,18 +182,25 @@ class LLMEngine:
 
     def _parse_response(self, content: str, expected_count: int) -> list[str]:
         """Parse the LLM response. Tries numbered lines first (primary format),
-        then JSON array (legacy/fallback), then line fallback."""
+        then JSON array (legacy/fallback). Trims extras or pads later."""
         # 1. Numbered lines (primary — matches prompt format)
         parsed = self._try_numbered(content)
         if len(parsed) == expected_count:
             return parsed
+        # If LLM returned more lines than expected, trim to expected
+        if len(parsed) > expected_count:
+            return parsed[:expected_count]
 
         # 2. JSON array (Qwen sometimes returns this anyway)
         parsed = self._try_json_array(content)
-        if parsed is not None and len(parsed) == expected_count:
-            return parsed
+        if parsed is not None:
+            if len(parsed) == expected_count:
+                return parsed
+            if len(parsed) > expected_count:
+                return parsed[:expected_count]
 
-        return parsed
+        # No exact match — return what we have (caller pads with originals)
+        return parsed if parsed is not None else []
 
     def _try_json_array(self, content: str) -> list[str] | None:
         """Extract a JSON array of strings from the response.
@@ -236,7 +246,8 @@ class LLMEngine:
         return results
 
     def _line_fallback(self, content: str, expected_count: int) -> list[str]:
-        """Last-resort: split by lines, strip numbering if present."""
+        """Last-resort: split by lines, strip numbering if present.
+        Trims extras if too many; returns short list if too few (caller pads)."""
         lines = [l.strip() for l in content.split("\n") if l.strip()]
         if len(lines) != expected_count:
             # Strip stray numbers and JSON artifacts
@@ -252,4 +263,7 @@ class LLMEngine:
             parts = [p.strip() for p in lines[0].split(",") if p.strip()]
             if len(parts) == expected_count:
                 return parts
-        return lines[:expected_count]
+        # Trim extras if too many; return short list if too few
+        if len(lines) >= expected_count:
+            return lines[:expected_count]
+        return lines
