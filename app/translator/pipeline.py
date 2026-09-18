@@ -109,6 +109,17 @@ class TranslationPipeline:
             all_translated.append("")
         all_translated = all_translated[:len(original_texts)]
 
+        # Validate: detect lines that weren't translated
+        untranslated = [(i, orig, trans) for i, (orig, trans)
+                        in enumerate(zip(original_texts, all_translated))
+                        if orig.strip() and orig.strip() == trans.strip()]
+        if untranslated:
+            logger.warning(
+                "%d/%d lines may not have been translated "
+                "(still match original text)",
+                len(untranslated), len(original_texts)
+            )
+
         self.progress.status = "completed"
         if on_progress:
             on_progress(self.progress)

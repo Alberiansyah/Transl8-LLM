@@ -178,6 +178,9 @@ class SubtitleFile:
 def clean_text(text: str) -> str:
     cleaned = TAG_PATTERN.sub('', text)
     cleaned = re.sub(r'<[^>]+>', '', cleaned)
+    # Normalize pysubs2 line-break markers (\N) to spaces
+    # so the LLM sees a single continuous line of text
+    cleaned = cleaned.replace('\\N', ' ').replace('\n', ' ')
     return cleaned.strip()
 
 

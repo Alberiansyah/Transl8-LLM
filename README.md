@@ -1,13 +1,14 @@
 # Subtitle Translator (LLM)
 
-Context-aware subtitle translation web app. Translates SRT/ASS/SSA/VTT files using your **local LLM** (Qwen3.5-9B via llama-server) — 100% offline, no cloud API.
+Context-aware subtitle translation web app. Translates SRT/ASS/SSA/VTT files using your **local LLM** (Qwen3.5 via llama-server) — 100% offline, no cloud API.
 
 Fork of the NLLB-based [Transl8](https://github.com/Alberiansyah/Transl8) — the heavy torch/transformers NLLB engine is replaced by a lightweight HTTP client to a local llama-server.
 
 ## Features
 
-- **Local LLM via llama-server** — Qwen3.5-9B (or any OpenAI-compatible local server)
+- **Local LLM via llama-server** — Qwen3.5-9B or any OpenAI-compatible local server
 - **Context-aware translation** — batches of lines sent together so the LLM keeps dialogue continuity
+- **Automatic pronoun resolution** — detects character names and dialogue flow to resolve "Dia" → He/She/They correctly
 - **107 languages** — full dropdown list (no typing needed): English, Indonesian, Javanese, Catalan, Swahili, Zulu, and more. Language names are sent to the LLM prompt directly, so any language the model understands works.
 - **LLM parameter control** — temperature, top-p, max-tokens
 - **Multi-file batch upload** — translate multiple files in one go, download as ZIP
@@ -20,6 +21,7 @@ Fork of the NLLB-based [Transl8](https://github.com/Alberiansyah/Transl8) — th
 - **Settings guide** — collapsible guide explaining Temperature, Top-P, Max Tokens, Context Batch
 - **LLM status badge** — live connection + model name indicator
 - **Original filename** on download
+- **Context fallback protection** — prevents LLM output truncation from dropping lines
 
 ## Prerequisites
 
@@ -83,12 +85,22 @@ Or edit `app/config.py` directly.
 | SubRip | `.srt` | Plain text |
 | WebVTT | `.vtt` | Plain text |
 
+## Bug Fixes Applied
+
+- **`max_tokens` capping** — output token limit was incorrectly calculated from input text length, causing the LLM to stop generating mid-batch and drop lines. Now uses the full `max_tokens` budget.
+- **Parser truncation handling** — `_try_numbered` now skips empty/truncated translation lines to avoid parsing artifacts.
+- **`\N` marker normalization** — pysubs2 line-break markers (`\N`) are normalized to spaces before sending to the LLM.
+- **System prompt** — explicit translation example and "ALWAYS translate" instruction prevents the model from returning original text.
+- **Context fallback** — `_line_fallback` preserves whatever the LLM generated instead of overwriting valid translations with original text.
+- **Dialogue context hint** — auto-detects character names and dialogue flow, injects context into the LLM prompt for accurate "Dia" → He/She resolution.
+
 ## Performance (measured)
 
 - Throughput is **~2-2.5 lines/s** on Qwen3.5-9B Q8_0 (~34 tokens/s generation). Each line costs ~15-20 output tokens.
 - **`batch_size` has almost no effect** — larger batches are slightly *slower* (context bloat). Keep the default 15.
 - The engine requests **numbered output** (`1. text\n2. text`), not JSON arrays — saves ~4-8 tokens/line.
 - Speed is bound by the model's token generation rate; use flash attention (`-fa on`) and a smaller/faster model (e.g. Qwen3.5-4B) for significantly faster translation.
+- **Qwen3.5-2B-Q8_0** achieves ~97% translation accuracy on 985-line subtitle files.
 
 ## API Endpoints
 
@@ -118,9 +130,10 @@ TranslateLLM/
       routes.py          # REST endpoints
       models.py          # Pydantic models
     translator/
-      llm_engine.py      # LLM translation engine (llama-server API)
-      pipeline.py        # Translation orchestrator
-      parser.py          # Subtitle file parser (SRT/ASS/VTT)
+      llm_engine.py      # LLM translation engine (llama-server API) + context resolver integration
+      pipeline.py        # Translation orchestrator + validation
+      parser.py          # Subtitle file parser (SRT/ASS/VTT) with \N normalization
+      context_resolver.py # Auto-detect character names and dialogue flow for pronoun resolution
       context_batcher.py # Context-aware batching
       glossary.py        # Custom glossary
     static/
@@ -137,7 +150,7 @@ TranslateLLM/
 
 ## Tech Stack
 
-- **LLM**: [llama.cpp](https://github.com/ggerganov/llama.cpp) `llama-server` (Qwen3.5-9B) — OpenAI-compatible chat completions API
+- **LLM**: [llama.cpp](https://github.com/ggerganov/llama.cpp) `llama-server` (Qwen3.5) — OpenAI-compatible chat completions API
 - **HTTP client**: httpx
 - **Backend**: FastAPI + uvicorn
 - **Subtitle parsing**: pysubs2

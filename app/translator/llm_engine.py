@@ -6,6 +6,7 @@ import time
 import logging
 import httpx
 from app.config import LLM_BASE_URL, LLM_MODEL_NAME
+from app.translator.context_resolver import get_context_resolver
 
 logger = logging.getLogger(__name__)
 
@@ -15,14 +16,22 @@ def _coerce_strings(data: list) -> list[str]:
     return [str(x).strip() for x in data if isinstance(x, (str, int, float))]
 
 # Compact translation system prompt — every token counts at generation speed.
-BASE_SYSTEM_PROMPT = """Translate subtitle lines. Rules:
+BASE_SYSTEM_PROMPT = """You are a professional subtitle translator. ALWAYS translate every line from source to target language. NEVER keep the original text.
+
+Example of CORRECT output (from Indonesian to English):
+Input:  1. Halo, apa kabar?
+        2. Saya baikah, terima kasih.
+Output: 1. Hello, how are you?
+        2. I'm fine, thank you.
+
+Rules:
 - Return numbered translations matching the input numbering exactly.
 - Each line: <number>. <translation>
 - Keep concise and natural for subtitle display.
 - Preserve meaning and tone.
-- If a line is already in the target language, keep it as-is.
 - Do NOT add explanations, notes, or any text outside the numbered lines.
-
+- Never repeat the original text — always produce the translated version.
+- Even one word lines must be translated (e.g., "Oke" -> "Okay").
 
 """
 
@@ -106,13 +115,20 @@ class LLMEngine:
         # Build numbered input
         numbered_input = "\n".join(f"{i+1}. {t}" for i, t in enumerate(valid_texts))
 
-        user_prompt = f"Translate these subtitle lines:\n\n{numbered_input}"
+        # Inject pronoun resolution context (e.g., "Dia" → "He"/"She")
+        context_hint = ""
+        resolver = get_context_resolver()
+        if len(valid_texts) >= 3:
+            context_hint = resolver.build_prompt_hint(valid_texts)
+
+        user_prompt = f"Translate these subtitle lines:\n\n{numbered_input}{context_hint}"
 
         system_prompt = build_system_prompt(source_lang, target_lang, glossary)
 
-        # Estimate output tokens: ~2 tokens per word + 2 tokens overhead per line
-        estimated_tokens = sum(len(t.split()) for t in valid_texts) * 2 + len(valid_texts) * 2 + 32
-        request_max_tokens = max(256, min(max_tokens, estimated_tokens))
+        # Output tokens: translation output can be as long as the input,
+        # plus numbering overhead. Use max_tokens directly so the LLM
+        # never gets starved mid-batch (which drops lines).
+        request_max_tokens = max_tokens
 
         t0 = time.perf_counter()
 
@@ -149,25 +165,33 @@ class LLMEngine:
 
         result = response.json()
         content = result["choices"][0]["message"]["content"].strip()
+        finish_reason = result["choices"][0].get("finish_reason", "")
 
         # Parse translations (numbered primary, JSON fallback)
         translated = self._parse_response(content, len(valid_texts))
 
-        # If _parse_response returned None (neither format matched), use line fallback
-        if translated is None:
+        # Detect truncation: if LLM hit the token ceiling, the last
+        # line may be a partial fragment. Drop it and fall back to
+        # line fallback so remaining lines get proper originals.
+        if finish_reason == "length" and translated:
+            last = translated[-1].strip()
+            if len(last.split()) < 2 and len(last) < 20:
+                logger.warning("Last translation line looks truncated, dropping it")
+                translated = translated[:-1]
+
+        if not translated:
             translated = self._line_fallback(content, len(valid_texts))
-        # If count mismatches, use line fallback
         elif len(translated) != len(valid_texts):
             logger.warning(
                 "Parsed %d translations but expected %d, trying line fallback",
                 len(translated), len(valid_texts),
             )
             translated = self._line_fallback(content, len(valid_texts))
-            if len(translated) != len(valid_texts):
-                logger.warning("Fallback failed, using partial results + originals")
-                for i in range(len(valid_texts)):
-                    if i >= len(translated):
-                        translated.append(valid_texts[i])
+        if len(translated) != len(valid_texts):
+            logger.warning("Fallback failed, using partial results + originals")
+            for i in range(len(valid_texts)):
+                if i >= len(translated):
+                    translated.append(valid_texts[i])
 
         # Map back to full list
         results = [""] * len(texts)
@@ -234,7 +258,8 @@ class LLMEngine:
         return None
 
     def _try_numbered(self, content: str) -> list[str]:
-        """Parse numbered translation response (e.g., '1. text\\n2. text')."""
+        """Parse numbered translation response (e.g., '1. text\\n2. text').
+        Skips lines with empty translations (truncation artifacts)."""
         results = []
         for line in content.split("\n"):
             line = line.strip()
@@ -242,28 +267,47 @@ class LLMEngine:
                 continue
             m = re.match(r"^\d+[\.\)\:]\s*(.*)", line)
             if m:
-                results.append(m.group(1).strip())
+                text = m.group(1).strip()
+                if text:  # Skip empty/truncated translation lines
+                    results.append(text)
         return results
 
     def _line_fallback(self, content: str, expected_count: int) -> list[str]:
-        """Last-resort: split by lines, strip numbering if present.
-        Trims extras if too many; returns short list if too few (caller pads)."""
+        """Last-resort: extract all lines from LLM response.
+        Preserves whatever the LLM generated (English, Indonesian, or mixed).
+        Only pads remaining gaps with originals at the pipeline level.
+        Never overwrites already-extracted translations."""
         lines = [l.strip() for l in content.split("\n") if l.strip()]
-        if len(lines) != expected_count:
-            # Strip stray numbers and JSON artifacts
-            cleaned = []
-            for line in lines:
-                line = re.sub(r"^\d+[\.\)\:]\s*", "", line)
-                line = line.strip('",[]')
-                if line:
-                    cleaned.append(line)
-            lines = cleaned
-        # If a single line contains all answers comma-separated, split it
-        if len(lines) == 1 and expected_count > 1:
-            parts = [p.strip() for p in lines[0].split(",") if p.strip()]
-            if len(parts) == expected_count:
-                return parts
-        # Trim extras if too many; return short list if too few
-        if len(lines) >= expected_count:
-            return lines[:expected_count]
-        return lines
+        if not lines:
+            return []
+
+        # If lines have numbering, extract the text after the number
+        numbered = []
+        for line in lines:
+            m = re.match(r"^\d+[\.\)\:]\s*(.*)", line)
+            if m:
+                text = m.group(1).strip()
+                if text:
+                    numbered.append(text)
+
+        if numbered:
+            # We got numbered lines — use them as-is, even if count differs
+            if len(numbered) >= expected_count:
+                return numbered[:expected_count]
+            return numbered
+
+        # No numbering found — try to extract raw text lines
+        # Strip JSON artifacts and stray numbers
+        cleaned = []
+        for line in lines:
+            line = re.sub(r"^\d+[\.\)\:]\s*", "", line)
+            line = line.strip('",[]')
+            if line:
+                cleaned.append(line)
+
+        if not cleaned:
+            return []
+
+        if len(cleaned) >= expected_count:
+            return cleaned[:expected_count]
+        return cleaned
