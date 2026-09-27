@@ -42,9 +42,11 @@ def init_db():
 
 @contextmanager
 def get_conn():
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
     try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         yield conn
         conn.commit()
     finally:
@@ -110,6 +112,10 @@ def delete_history(job_id: str) -> bool:
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
-    d["filenames"] = json.loads(d["filenames"])
-    d["output_paths"] = json.loads(d["output_paths"])
+    for key in ("filenames", "output_paths"):
+        try:
+            d[key] = json.loads(d[key])
+        except (json.JSONDecodeError, TypeError, KeyError):
+            logger.warning(f"Corrupt {key} in history row; falling back to []")
+            d[key] = []
     return d

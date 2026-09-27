@@ -5,7 +5,14 @@ import json
 import time
 import logging
 import httpx
-from app.config import LLM_BASE_URL, LLM_MODEL_NAME
+from app.config import (
+    LLM_BASE_URL,
+    LLM_MODEL_NAME,
+    LLM_TIMEOUT,
+    LLM_CONNECT_TIMEOUT,
+    LLM_MAX_RETRIES,
+    LLM_CONCURRENCY,
+)
 from app.translator.context_resolver import get_context_resolver
 
 logger = logging.getLogger(__name__)
@@ -35,6 +42,12 @@ Rules:
 
 """
 
+# Matches a numbered output line: "1. text", "2) text", "3: text".
+# The separator must be followed by whitespace or end-of-line, and the digit
+# run is capped, so SRT-style timelines ("00:00:01,000 --> ...") and decimals
+# ("3.5") are NOT treated as numbered translation lines.
+_NUMBERED_RE = re.compile(r"^\s*(\d{1,4})\s*[\.\)\:](?:\s+(.*))?$")
+
 
 def build_system_prompt(source_lang: str, target_lang: str, glossary: list[dict] | None = None) -> str:
     """Build the system prompt for translation, including glossary if provided."""
@@ -44,15 +57,22 @@ def build_system_prompt(source_lang: str, target_lang: str, glossary: list[dict]
     )
 
     if glossary:
+        # Deterministic ordering keeps the system prompt byte-stable across
+        # batches, which lets llama-server reuse its prompt-prefix cache.
+        entries = sorted(
+            (g for g in glossary if isinstance(g, dict)),
+            key=lambda g: (str(g.get("source", "")), str(g.get("target", ""))),
+        )
         terms = "\n".join(
-            f"- {g['source']} => {g['target']}"
-            for g in glossary
+            f"- {g.get('source', '')} => {g.get('target', '')}"
+            for g in entries
         )
-        prompt += (
-            "\n\nUse these glossary terms when translating (ALWAYS use the given translation,"
-            " preserving capitalization where appropriate):\n"
-            + terms
-        )
+        if terms:
+            prompt += (
+                "\n\nUse these glossary terms when translating (ALWAYS use the given translation,"
+                " preserving capitalization where appropriate):\n"
+                + terms
+            )
 
     return prompt
 
@@ -65,11 +85,26 @@ class LLMEngine:
         self.model = LLM_MODEL_NAME
         self.connected = False
         self.server_model = None
+        # Single reusable client — httpx.Client is thread-safe, so concurrent
+        # batches can share it. Keeps the connection pool warm across requests.
+        self._client = httpx.Client(
+            timeout=httpx.Timeout(LLM_TIMEOUT, connect=LLM_CONNECT_TIMEOUT),
+            limits=httpx.Limits(
+                max_keepalive_connections=max(4, LLM_CONCURRENCY * 2)
+            ),
+        )
+
+    def close(self) -> None:
+        """Close the underlying HTTP client and its connection pool."""
+        try:
+            self._client.close()
+        except Exception:
+            pass
 
     def check_connection(self) -> dict:
         """Check if llama-server is reachable and get model info."""
         try:
-            resp = httpx.get(f"{self.base_url}/v1/models", timeout=5.0)
+            resp = self._client.get(f"{self.base_url}/v1/models")
             if resp.status_code == 200:
                 data = resp.json()
                 models = data.get("data", [])
@@ -115,12 +150,14 @@ class LLMEngine:
         # Build numbered input
         numbered_input = "\n".join(f"{i+1}. {t}" for i, t in enumerate(valid_texts))
 
-        # Inject pronoun resolution context (e.g., "Dia" → "He"/"She")
+        # Inject pronoun resolution context (e.g., "Dia" → "He"/"She").
+        # Kept out of the system prompt so the system prompt stays cache-stable.
         context_hint = ""
         resolver = get_context_resolver()
         if len(valid_texts) >= 3:
             context_hint = resolver.build_prompt_hint(valid_texts)
 
+        # context_hint already carries its own leading blank line.
         user_prompt = f"Translate these subtitle lines:\n\n{numbered_input}{context_hint}"
 
         system_prompt = build_system_prompt(source_lang, target_lang, glossary)
@@ -130,73 +167,83 @@ class LLMEngine:
         # never gets starved mid-batch (which drops lines).
         request_max_tokens = max_tokens
 
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": temperature,
+            "max_tokens": request_max_tokens,
+            "top_p": top_p,
+            # Qwen3.x default to thinking mode which consumes the whole
+            # token budget on reasoning_content (content stays empty).
+            "reasoning_effort": "none",
+        }
+
         t0 = time.perf_counter()
 
-        try:
-            response = httpx.post(
-                f"{self.base_url}/v1/chat/completions",
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "temperature": temperature,
-                    "max_tokens": request_max_tokens,
-                    "top_p": top_p,
-                    # Qwen3.x default to thinking mode which consumes the whole
-                    # token budget on reasoning_content (content stays empty).
-                    "reasoning_effort": "none",
-                },
-                timeout=180.0,
-            )
-            response.raise_for_status()
-        except httpx.TimeoutException:
-            logger.error("LLM request timed out")
-            return texts  # Return originals on failure
-        except httpx.ConnectError:
-            logger.error("Cannot connect to LLM server at %s", self.base_url)
-            return texts
-        except Exception as e:
-            logger.error("LLM request failed: %s", e)
-            return texts
+        attempts = max(1, LLM_MAX_RETRIES + 1)
+        content: str | None = None
+        finish_reason = ""
+        last_error: Exception | None = None
+
+        for attempt in range(attempts):
+            try:
+                response = self._client.post(
+                    f"{self.base_url}/v1/chat/completions",
+                    json=payload,
+                )
+                response.raise_for_status()
+                result = response.json()
+                choices = result["choices"]
+                message = choices[0]["message"]
+                content = (message["content"] or "").strip()
+                finish_reason = choices[0].get("finish_reason", "")
+                last_error = None
+                break
+            except Exception as e:
+                # Malformed response (KeyError/IndexError/ValueError) or a
+                # transient transport error — retry, then degrade gracefully.
+                last_error = e
+                content = None
+                if attempt + 1 < attempts:
+                    logger.warning(
+                        "LLM batch attempt %d/%d failed (%s: %s), retrying",
+                        attempt + 1, attempts, type(e).__name__, e,
+                    )
 
         elapsed = time.perf_counter() - t0
 
-        result = response.json()
-        content = result["choices"][0]["message"]["content"].strip()
-        finish_reason = result["choices"][0].get("finish_reason", "")
+        if content is None:
+            logger.error("LLM request failed after %d attempt(s): %s", attempts, last_error)
+            return texts  # Return originals on failure
 
         # Parse translations (numbered primary, JSON fallback)
         translated = self._parse_response(content, len(valid_texts))
 
-        # Detect truncation: if LLM hit the token ceiling, the last
-        # line may be a partial fragment. Drop it and fall back to
-        # line fallback so remaining lines get proper originals.
+        # Detect truncation: if the LLM hit the token ceiling, the last
+        # line may be a partial fragment. Blank it so the original is kept.
         if finish_reason == "length" and translated:
             last = translated[-1].strip()
             if len(last.split()) < 2 and len(last) < 20:
                 logger.warning("Last translation line looks truncated, dropping it")
-                translated = translated[:-1]
+                translated[-1] = ""
 
-        if not translated:
-            translated = self._line_fallback(content, len(valid_texts))
-        elif len(translated) != len(valid_texts):
-            logger.warning(
-                "Parsed %d translations but expected %d, trying line fallback",
-                len(translated), len(valid_texts),
-            )
-            translated = self._line_fallback(content, len(valid_texts))
-        if len(translated) != len(valid_texts):
-            logger.warning("Fallback failed, using partial results + originals")
-            for i in range(len(valid_texts)):
-                if i >= len(translated):
-                    translated.append(valid_texts[i])
+        # Guard exact length (parse already pads, but stay defensive).
+        if len(translated) < len(valid_texts):
+            translated = translated + [""] * (len(valid_texts) - len(translated))
+        elif len(translated) > len(valid_texts):
+            translated = translated[:len(valid_texts)]
 
-        # Map back to full list
+        # Map back to full list. Empty/whitespace entries keep the original
+        # text for that specific line so alignment never drifts.
         results = [""] * len(texts)
         for idx, text in zip(valid_indices, translated):
-            results[idx] = text
+            if text is None or not str(text).strip():
+                results[idx] = texts[idx]   # untranslated -> keep original, preserves alignment
+            else:
+                results[idx] = text
 
         logger.info(
             "Translated %d lines via LLM in %.3fs",
@@ -206,25 +253,33 @@ class LLMEngine:
 
     def _parse_response(self, content: str, expected_count: int) -> list[str]:
         """Parse the LLM response. Tries numbered lines first (primary format),
-        then JSON array (legacy/fallback). Trims extras or pads later."""
+        then JSON array (legacy/fallback), then raw-line fallback.
+        Always returns a list of length ``expected_count`` (padded with "")."""
         # 1. Numbered lines (primary — matches prompt format)
         parsed = self._try_numbered(content)
-        if len(parsed) == expected_count:
+        if parsed:
+            if len(parsed) < expected_count:
+                parsed = parsed + [""] * (expected_count - len(parsed))
+            elif len(parsed) > expected_count:
+                parsed = parsed[:expected_count]
             return parsed
-        # If LLM returned more lines than expected, trim to expected
-        if len(parsed) > expected_count:
-            return parsed[:expected_count]
 
         # 2. JSON array (Qwen sometimes returns this anyway)
         parsed = self._try_json_array(content)
-        if parsed is not None:
+        if parsed:
             if len(parsed) == expected_count:
                 return parsed
             if len(parsed) > expected_count:
                 return parsed[:expected_count]
+            return parsed + [""] * (expected_count - len(parsed))
 
-        # No exact match — return what we have (caller pads with originals)
-        return parsed if parsed is not None else []
+        # 3. Last-resort raw line extraction
+        parsed = self._line_fallback(content, expected_count)
+        if len(parsed) < expected_count:
+            parsed = parsed + [""] * (expected_count - len(parsed))
+        elif len(parsed) > expected_count:
+            parsed = parsed[:expected_count]
+        return parsed
 
     def _try_json_array(self, content: str) -> list[str] | None:
         """Extract a JSON array of strings from the response.
@@ -252,25 +307,48 @@ class LLMEngine:
         #    Extract every quoted string inside the brackets in order.
         strings = re.findall(r'"((?:[^"\\]|\\.)*)"', array_text)
         if strings:
-            return [s.encode().decode("unicode_escape", errors="replace").strip()
-                    if "\\" in s else s.strip() for s in strings]
+            results = []
+            for s in strings:
+                if "\\" in s:
+                    # Properly unescape JSON escapes; never mangle valid
+                    # non-ASCII text that merely contains a backslash.
+                    try:
+                        s = json.loads('"' + s + '"')
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        pass
+                results.append(s.strip())
+            return results
 
         return None
 
     def _try_numbered(self, content: str) -> list[str]:
         """Parse numbered translation response (e.g., '1. text\\n2. text').
-        Skips lines with empty translations (truncation artifacts)."""
-        results = []
+
+        Parses by explicit number so empty entries do not shift every
+        later line. Returns a list covering the numbering range, with ""
+        for any missing/empty number. Empty list if no numbered lines are
+        present. Absurd numbers are ignored to avoid huge allocations.
+        """
+        entries: dict[int, str] = {}
         for line in content.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            m = re.match(r"^\d+[\.\)\:]\s*(.*)", line)
+            m = _NUMBERED_RE.match(line)
             if m:
-                text = m.group(1).strip()
-                if text:  # Skip empty/truncated translation lines
-                    results.append(text)
-        return results
+                n = int(m.group(1))
+                if n > 10000:          # ignore absurd numbers (hallucinated timestamps etc.)
+                    continue
+                entries[n] = (m.group(2) or "").strip()
+        if not entries:
+            return []
+        # Detect 0-based numbering so line 0 is not silently dropped.
+        base = 0 if 0 in entries else 1
+        max_num = max(entries)
+        size = max_num - base + 1
+        out = [""] * size
+        for n, txt in entries.items():
+            idx = n - base
+            if 0 <= idx < size:
+                out[idx] = txt
+        return out
 
     def _line_fallback(self, content: str, expected_count: int) -> list[str]:
         """Last-resort: extract all lines from LLM response.
@@ -284,9 +362,9 @@ class LLMEngine:
         # If lines have numbering, extract the text after the number
         numbered = []
         for line in lines:
-            m = re.match(r"^\d+[\.\)\:]\s*(.*)", line)
+            m = _NUMBERED_RE.match(line)
             if m:
-                text = m.group(1).strip()
+                text = (m.group(2) or "").strip()
                 if text:
                     numbered.append(text)
 

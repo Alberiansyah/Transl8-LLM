@@ -34,6 +34,8 @@ const historyList = document.getElementById('historyList');
 let selectedFiles = [];
 let currentJobId = null;
 let glossaryEntries = [];
+let pollTimer = null;
+let pollFailures = 0;
 
 function formatTime(seconds) {
     if (seconds < 60) return `${seconds}s`;
@@ -89,15 +91,15 @@ function renderHistory(entries) {
                 ${entry.is_batch ? '<span class="history-badge batch">Batch</span>' : ''}
             </div>
             <div class="history-meta">
-                <span>${langName(entry.source_lang)} → ${langName(entry.target_lang)}</span>
-                <span>${entry.total_lines} lines</span>
-                <span>${formatTime(entry.elapsed_seconds)}</span>
-                <span>${entry.lines_per_second} lines/s</span>
-                <span>${dateStr} ${timeStr}</span>
+                <span>${esc(langName(entry.source_lang))} → ${esc(langName(entry.target_lang))}</span>
+                <span>${esc(entry.total_lines)} lines</span>
+                <span>${esc(formatTime(entry.elapsed_seconds))}</span>
+                <span>${esc(entry.lines_per_second)} lines/s</span>
+                <span>${esc(dateStr)} ${esc(timeStr)}</span>
             </div>
             <div class="history-actions">
-                <button class="btn-small btn-download" data-job="${entry.job_id}" data-batch="${entry.is_batch}">Download</button>
-                <button class="btn-small btn-delete-history" data-job="${entry.job_id}">Delete</button>
+                <button class="btn-small btn-download" data-job="${esc(entry.job_id)}" data-batch="${entry.is_batch}">Download</button>
+                <button class="btn-small btn-delete-history" data-job="${esc(entry.job_id)}">Delete</button>
             </div>
         `;
         historyList.appendChild(div);
@@ -303,9 +305,12 @@ function renderGlossary() {
 }
 
 function esc(s) {
-    const d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
+    return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 translateBtn.addEventListener('click', startTranslation);
@@ -313,12 +318,19 @@ translateBtn.addEventListener('click', startTranslation);
 async function startTranslation() {
     if (selectedFiles.length === 0) return;
 
+    // Guard against overlapping jobs: if one is already polling, don't start another.
+    if (pollTimer) {
+        alert('A translation is already in progress. Please wait for it to finish or cancel it first.');
+        return;
+    }
+
     translateBtn.disabled = true;
     translateBtn.textContent = 'Starting...';
     progressPanel.style.display = 'block';
     downloadBtn.style.display = 'none';
     cancelBtn.style.display = 'block';
     cancelBtn.disabled = false;
+    cancelBtn.textContent = 'Cancel Translation';
     progressBar.style.width = '0%';
     progressText.textContent = '0%';
     statusText.textContent = 'Uploading...';
@@ -364,12 +376,34 @@ async function startTranslation() {
     }
 }
 
+function stopPolling() {
+    if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+    }
+}
+
 function pollProgress() {
     if (!currentJobId) return;
 
-    const interval = setInterval(async () => {
+    // Never leave a previous interval running.
+    stopPolling();
+    pollFailures = 0;
+
+    pollTimer = setInterval(async () => {
         try {
             const resp = await fetch(`/api/progress/${currentJobId}`);
+
+            if (!resp.ok) {
+                // Job gone (e.g. server restarted) — stop polling instead of looping forever.
+                stopPolling();
+                statusText.textContent = 'Job not found or server restarted';
+                cancelBtn.style.display = 'none';
+                translateBtn.disabled = false;
+                translateBtn.textContent = 'Translate';
+                return;
+            }
+
             const data = await resp.json();
 
             const pct = Math.round(data.percent);
@@ -383,28 +417,43 @@ function pollProgress() {
             etaInfo.textContent = data.eta_seconds > 0 ? formatTime(data.eta_seconds) : '-';
 
             if (data.status === 'completed') {
-                clearInterval(interval);
+                stopPolling();
                 const count = selectedFiles.length;
                 downloadBtn.textContent = count > 1 ? `Download All (${count} files ZIP)` : 'Download Translated File';
                 downloadBtn.style.display = 'block';
                 cancelBtn.style.display = 'none';
+                cancelBtn.textContent = 'Cancel Translation';
+                cancelBtn.disabled = false;
                 translateBtn.disabled = false;
                 translateBtn.textContent = 'Translate';
                 loadHistory();
             } else if (data.status === 'cancelled') {
-                clearInterval(interval);
+                stopPolling();
                 statusText.textContent = 'Cancelled';
                 cancelBtn.style.display = 'none';
+                cancelBtn.textContent = 'Cancel Translation';
+                cancelBtn.disabled = false;
                 translateBtn.disabled = false;
                 translateBtn.textContent = 'Translate';
             } else if (data.status === 'failed') {
-                clearInterval(interval);
+                stopPolling();
                 statusText.textContent = 'Failed: ' + (data.error || 'Unknown error');
+                cancelBtn.style.display = 'none';
+                cancelBtn.textContent = 'Cancel Translation';
+                cancelBtn.disabled = false;
                 translateBtn.disabled = false;
                 translateBtn.textContent = 'Translate';
             }
         } catch (e) {
             console.error('Poll error:', e);
+            pollFailures++;
+            if (pollFailures >= 5) {
+                stopPolling();
+                statusText.textContent = 'Lost connection to server. Translation status unknown.';
+                cancelBtn.style.display = 'none';
+                translateBtn.disabled = false;
+                translateBtn.textContent = 'Translate';
+            }
         }
     }, 800);
 }
@@ -426,9 +475,11 @@ cancelBtn.addEventListener('click', async () => {
     }
 });
 
-loadLanguages();
-loadLLMStatus();
-loadHistory();
+(async () => {
+    await loadLanguages();
+    await loadLLMStatus();
+    await loadHistory();
+})();
 
 document.querySelector('.guide-toggle').addEventListener('click', () => {
     const content = document.getElementById('guideContent');

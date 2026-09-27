@@ -4,22 +4,6 @@ from pydantic import BaseModel
 from typing import Optional
 
 
-class TranslateRequest(BaseModel):
-    source_lang: str = "English"
-    target_lang: str = "Indonesian"
-    batch_size: int = 15
-    temperature: float = 0.3
-    max_tokens: int = 2048
-    top_p: float = 0.9
-    glossary: list[dict] = []
-
-
-class GlossaryEntryModel(BaseModel):
-    source: str
-    target: str
-    case_sensitive: bool = True
-
-
 class TranslateResponse(BaseModel):
     job_id: str
     status: str
